@@ -3,9 +3,11 @@ index-terrain.html
 terrain-test.html
 stl-test.html
 
-# 第三方地形素材：许可与体积原因不入库；README 说明了如何自行放置后重新构建
-assets/*.glb
-assets/*.stl
+# 第三方地形素材：原始全分辨率模型不入库（体积大，可由 README 步骤自行获取）；
+# 已降采样的 2K 版本入库，使 `node build.mjs` 能复现站点上发布的那份单文件。
+assets/terrain.glb
+assets/terrain.stl
+!assets/terrain-2k.glb
 
 # 测试过程产物（可由 tests/ 下脚本重新生成）
 tests/*.png

@@ -31,6 +31,7 @@ const uniforms = {
   sunColors: { value: [new THREE.Vector3(1, .94, .83), new THREE.Vector3(1, .78, .58), new THREE.Vector3(.88, .94, 1)] },
   powers: { value: [1, 1, 1] }, radii: { value: [.005, .005, .005] },
   clock: { value: 0 }, weatherClock: { value: 0 }, yaw: { value: 0 }, pitch: { value: .08 }, fov: { value: 65 * Math.PI / 180 },
+  proceduralStars: { value: 1 },
   exposure: { value: 1 }, cloudCover: { value: .42 }, temperature: { value: 288.15 }, quality: { value: 1 },
   terrainMesh: { value: 0 }
 };
@@ -46,6 +47,49 @@ worldScene.fog = new THREE.Fog(0xb9c3c9, 2500, 26000);
 const sunLights = [0, 1, 2].map(() => { const l = new THREE.DirectionalLight(0xffffff, 1); worldScene.add(l); return l; });
 worldScene.add(new THREE.AmbientLight(0x2e3f49, .8));
 const TERRAIN = { span: 14000, waterline: 0 }; // placement knobs, meters-ish
+// Real stars (catalogue built by tools/make-starfield.py): one point sprite per
+// star, placed on the celestial sphere, sized to a couple of pixels and re-oriented
+// every frame so the whole sky turns with the planet's spin.
+function starColor(bv) {
+  const t = clamp((bv + .4) / 2.4, 0, 1);
+  return [1 - .35 * t, .86 - .14 * t, 1 - .45 * t];   // blue-white -> warm orange
+}
+let starPoints = null;
+const STAR_RADIUS = 20000;
+if (window.STARFIELD_CATALOG && window.STARFIELD_CATALOG.stars) {
+  const stars = window.STARFIELD_CATALOG.stars;
+  const position = new Float32Array(stars.length * 3);
+  const color = new Float32Array(stars.length * 3);
+  const size = new Float32Array(stars.length);
+  stars.forEach(([ra, dec, mag, bv], i) => {
+    const r = ra * Math.PI / 180, d = dec * Math.PI / 180;
+    position[i * 3] = Math.cos(d) * Math.cos(r) * STAR_RADIUS;
+    position[i * 3 + 1] = Math.sin(d) * STAR_RADIUS;
+    position[i * 3 + 2] = Math.cos(d) * Math.sin(r) * STAR_RADIUS;
+    const c = starColor(bv);
+    color[i * 3] = c[0]; color[i * 3 + 1] = c[1]; color[i * 3 + 2] = c[2];
+    size[i] = clamp(1.05 + (4.0 - mag) * .5, 1, 3.4);   // light points, never discs
+  });
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(position, 3));
+  geometry.setAttribute('starColor', new THREE.BufferAttribute(color, 3));
+  geometry.setAttribute('size', new THREE.BufferAttribute(size, 1));
+  const starMaterial = new THREE.ShaderMaterial({
+    uniforms: { nightSky: { value: 1 }, pixelRatio: { value: 1 } },
+    vertexShader: 'attribute float size;attribute vec3 starColor;varying vec3 vColor;uniform float pixelRatio;'
+      + 'void main(){vColor=starColor;vec4 mv=modelViewMatrix*vec4(position,1.0);'
+      + 'gl_PointSize=max(1.0,size*pixelRatio);gl_Position=projectionMatrix*mv;}',
+    fragmentShader: 'varying vec3 vColor;uniform float nightSky;'
+      + 'void main(){vec2 d=gl_PointCoord-vec2(0.5);float r2=dot(d,d);if(r2>0.25)discard;'
+      + 'float a=exp(-r2*14.0);gl_FragColor=vec4(vColor*a*nightSky,1.0);}',
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  starPoints = new THREE.Points(geometry, starMaterial);
+  starPoints.frustumCulled = false;
+  starPoints.matrixAutoUpdate = false;
+  worldScene.add(starPoints);
+  uniforms.proceduralStars.value = 0;      // real catalogue wins over the fallback
+}
 let terrainReady = false;
 // Elevation/slope palette: STL terrains carry no material, so colour the mesh.
 function colorizeTerrain(geometry) {
@@ -346,6 +390,17 @@ function tick(now) {
       if (deathRemaining <= 0 && $('auto').checked && !paused) reset();
     }
     const view = viewState();
+    // Orient the star sphere: celestial -> local view frame (rows east, up, -north),
+    // the same basis the sun directions use, so the stars rise and set with them.
+    const frame = observerFrame(view, phase, viewDays);
+    if (starPoints) {
+      starPoints.matrix.set(
+        frame.east[0], frame.up[0], -frame.north[0], 0,
+        frame.east[1], frame.up[1], -frame.north[1], 0,
+        frame.east[2], frame.up[2], -frame.north[2], 0,
+        0, 0, 0, 1);
+      starPoints.matrixWorldNeedsUpdate = true;
+    }
     const dirs = localSunDirections(view, phase, viewDays);
     const viewEnv = environment(view.bodies);
     const powers = view.bodies.slice(0, 3).map((b, i) => b.luminosity / viewEnv.distances[i] ** 2);
@@ -359,7 +414,12 @@ function tick(now) {
       light.intensity = clamp(powers[i] * 2.2, .02, 2.6);
       light.visible = d[1] > -.05;
     });
-    const daylight = dirs.reduce((s, d, i) => s + Math.max(0, d[1]) * powers[i], 0);
+    const daylight = dirs.reduce((s, d, i) => s + Math.max(0, d[1] + .09) * powers[i], 0);
+    const night = Math.exp(-daylight * 9.0);
+    if (starPoints) {
+      starPoints.material.uniforms.nightSky.value = night;
+      starPoints.material.uniforms.pixelRatio.value = effectiveRatio();
+    }
     const dayT = clamp(daylight / 1.2, 0, 1);
     worldScene.fog.color.setRGB(.04 + .68 * dayT, .05 + .71 * dayT, .07 + .74 * dayT);
     const cy = Math.cos(uniforms.yaw.value), sy = Math.sin(uniforms.yaw.value);

@@ -31,6 +31,7 @@ uniform float cloudCover;
 uniform float temperature;
 uniform float quality;
 uniform float terrainMesh;
+uniform float proceduralStars;  // 1 only when no real catalogue is embedded
 const float PI=3.14159265359;
 float hash(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
 float noise(vec2 p) {
@@ -50,6 +51,27 @@ vec2 sphere(vec3 ro,vec3 rd,float radius) {
   return vec2(-b-sqrt(d),-b+sqrt(d));
 }
 // Single scattering through exponential Rayleigh and Mie density profiles.
+// One star layer, sized to mimic the real naked-eye sky: a sparse hash grid whose
+// lit cells place a star at a random spot inside the cell (no lattice shows),
+// with a power-law magnitude spread, a colour temperature and a point spread that
+// never drops below ~1 px. Layer counts (whole sphere) follow the real
+// magnitude histogram: ~20 first-magnitude stars, ~50 second, ~150 third,
+// ~500 fourth, ~1600 fifth, ~4800 sixth -- roughly 3x per magnitude.
+vec3 starLayer(vec2 st, float ppr, float density, float litFraction, float gain, float seed) {
+  vec2 grid=st*density;
+  vec2 cell=floor(grid);
+  if(hash(cell+seed)>litFraction) return vec3(0.0);
+  float h1=hash(cell+seed+1.7),h2=hash(cell+seed+3.3);
+  float h3=hash(cell+seed+7.1),h4=hash(cell+seed+11.3);
+  vec2 delta=(fract(grid)-vec2(h1,h2))/density;
+  float angle=length(delta*vec2(cos(st.y),1.0));
+  float mag=pow(h3,2.5);                               // few bright, many faint
+  float sigma=(.7+.9*mag)/max(1.0,ppr);                // brightest read as small discs
+  float core=exp(-.5*angle*angle/(sigma*sigma));
+  float glow=exp(-.5*angle*angle/(2.5*sigma*sigma))*.06*mag;
+  vec3 tint=mix(vec3(.60,.70,1.0),vec3(1.0,.84,.68),h4);
+  return tint*(core*(.20+3.6*mag)+glow)*gain;
+}
 vec3 atmosphere(vec3 rd, bool disk) {
   const float R=6371000.0,A=6471000.0;
   const vec3 betaR=vec3(5.8e-6,13.5e-6,33.1e-6);
@@ -116,23 +138,16 @@ vec3 atmosphere(vec3 rd, bool disk) {
   for(int i=0;i<3;i++)daylight+=max(0.0,suns[i].y+.09)*powers[i];
   float night=exp(-daylight*9.0);
   sum+=vec3(.0008,.0015,.0026)*night;
-  if(disk && rd.y>0.0) {
-    // Background stars are POINT IMAGES with a ~1 px spread, exactly like a
-    // flying star. A sub-pixel core (the old pow(...,18) cell) survived only by
-    // sampling luck and vanished whenever the render resolution dropped.
+  if(disk && rd.y>0.0 && proceduralStars>.5) {
+    // Fallback only: when the real catalogue is embedded the stars come from the
+    // point sprites in the world scene, which also rotate with the planet.
     vec2 st=vec2(atan(rd.z,rd.x),asin(rd.y));
-    float pixelsPerRad=resolution.y/fov;
-    vec2 grid=st*220.0;
-    vec2 cell=floor(grid);
-    float h=hash(cell);
-    vec2 jitter=vec2(hash(cell+1.7),hash(cell+3.3))-.5;
-    vec2 offset=(fract(grid)-.5-jitter*.7)/220.0;
-    float angular=length(offset*vec2(cos(st.y),1.0));
-    float core=exp(-.5*angular*angular*pixelsPerRad*pixelsPerRad/.9);
-    float magnitude=.3+.7*hash(cell+7.1);
+    float ppr=resolution.y/fov;
+    vec3 field=starLayer(st,ppr,40.0,.00048,1.4,0.0)
+              +starLayer(st,ppr,80.0,.00038,.9,17.0)
+              +starLayer(st,ppr,170.0,.00041,.55,41.0);
     float band=pow(max(0.0,1.0-abs(rd.x*.5+rd.y*.7+rd.z*.2)),12.0);
-    sum+=night*(vec3(.42,.5,.62)*step(.996,h)*magnitude*2.4*core
-                +vec3(.001,.0012,.0017)*fbm(rd.xz*100.0)*band);
+    sum+=night*(field+vec3(.001,.0012,.0017)*fbm(rd.xz*100.0)*band);
   }
   return sum;
 }
@@ -145,6 +160,7 @@ vec3 sunlight(vec3 normal) {
   }
   return light;
 }
+
 vec3 clouds(vec3 rd,vec3 sky) {
   if(rd.y<.015 || cloudCover<.01)return sky;
   // Clouds ride the WEATHER clock (simulated days), so their drift scales with

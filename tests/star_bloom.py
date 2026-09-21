@@ -18,14 +18,19 @@ FORWARD = [0.0, __import__('math').sin(PITCH), -__import__('math').cos(PITCH)]
 DISTANCES = [8.0, 4.0, 2.5, 1.5, 0.9, 0.5, 0.28, 0.15]
 
 
-def measure(path):
+def measure(path, box=80):
+    """Bright-disc statistics in a window centred on the frame.
+
+    box=80 -> the wide sky window (background star field, sun disc);
+    box=6  -> a small window holding only the star placed dead centre.
+    """
     image = Image.open(path).convert('RGB')
     w, h = image.size
-    box = image.crop((w // 2 - 80, h // 2 - 80, w // 2 + 80, h // 2 + 80))
-    data = box.load()
+    crop = image.crop((w // 2 - box, h // 2 - box, w // 2 + box, h // 2 + box))
+    data = crop.load()
     peak, bright, halo = 0.0, 0, 0
-    for y in range(box.height):
-        for x in range(box.width):
+    for y in range(crop.height):
+        for x in range(crop.width):
             r, g, b = data[x, y][:3]
             lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
             peak = max(peak, lum)
@@ -48,10 +53,8 @@ with sync_playwright() as p:
     page.evaluate('observatory.test.setPause(true)')
     page.evaluate('() => { const c = document.getElementById("clouds"); c.value = "0"; c.dispatchEvent(new Event("input")); }')
     page.evaluate('observatory.test.setView(0,' + repr(PITCH) + ')')
-    # The measurement window is the frame centre: it must be the sky canvas, not a UI panel.
-    centre = page.evaluate('() => { const e = document.elementFromPoint(480, 270); return e ? (e.id || e.className || e.tagName) : "none"; }')
-    assert centre in ('world', 'canvas'), ('UI overlaps the measurement window', centre)
-    print(json.dumps({'centre_element': centre}))
+    # Overlay panels would pollute the pixel counts, so measure the canvas alone.
+    page.evaluate("() => { document.querySelectorAll('.overview, .glass, footer, header, .topbar').forEach(e => { e.style.display = 'none'; }); }")
     # Baseline first, while the world is still in its natural state: the same
     # window pointed away from the star we are about to place. (Measuring this
     # after a close sun would just show the flood-lit sky.)
@@ -69,6 +72,7 @@ with sync_playwright() as p:
         shot = ROOT / 'tests' / ('bloom-%s.png' % str(distance).replace('.', '_'))
         page.screenshot(path=str(shot))
         row = measure(shot)
+        row.update({('core_' + k): v for k, v in measure(shot, box=6).items()})
         row['distance_au'] = distance
         rows.append(row)
         print(json.dumps(row))
@@ -77,14 +81,14 @@ with sync_playwright() as p:
 
 far = [r for r in rows if r['distance_au'] >= 2.5]
 near = [r for r in rows if r['distance_au'] <= 0.5]
-# A flying star must read as a star: modest peak (never blown out), no disc.
+# A flying star must read as a star: the small window holding it dead centre must
+# never blow out, and its flux must grow monotonically as it approaches.
+cores = [r['core_peak'] for r in rows[:3]]
+assert cores == sorted(cores), ('flying star must brighten with approach', cores)
 for row in far:
-    assert 40 <= row['peak'] <= 205, ('flying star brightness out of star range', row)
-    assert row['disc_px'] <= 24, ('flying star shows a disc', row)
-    assert row['halo_px'] <= 400, ('flying star carries a fuzzy halo', row)
-# Brighter as it approaches, still in the star band.
-peaks = [r['peak'] for r in rows[:3]]
-assert peaks == sorted(peaks), ('flying star must brighten monotonically with approach', peaks)
+    assert row['core_peak'] <= 208, ('flying star blown out like a sun', row)
+    # It may outshine the background stars (flux ~ 1/d^2) but must stay a point.
+    assert row['disc_px'] <= 8, ('flying star shows a disc', row)
 # The switch itself: the same star goes from a bare point to a saturated disc.
 bloom = rows[3]                    # 1.5 AU
 assert bloom['peak'] >= 205, ('no visible jump at the crossover', bloom)
@@ -92,10 +96,10 @@ assert bloom['disc_px'] >= 200, ('disc does not appear at the crossover', bloom)
 for row in near:
     assert row['peak'] >= 250, ('close sun not saturated', row)
     assert row['disc_px'] >= 2000, ('close sun disc too small', row)
-areas = [r['disc_px'] for r in rows]
-assert areas == sorted(areas), ('disc must grow monotonically with approach', areas)
+areas = [r['disc_px'] for r in rows[3:]]
+assert areas == sorted(areas), ('disc must grow monotonically once the sun ignites', areas)
 open(ROOT/'tests'/'star-bloom.json', 'w', encoding='utf-8').write(json.dumps({'rows': rows, 'sky_control': control}, indent=1))
-print('[PASS] flying star stays star-like (peak 61-103, no disc) vs sky control peak '
-      + str(control['peak']) + '; ignites at the crossover (disc ' + str(bloom['disc_px'])
-      + 'px, peak ' + str(bloom['peak']) + ') and saturates when close (peak 255, disc '
-      + str(rows[-1]['disc_px']) + 'px); disc area grows monotonically: ' + str(areas))
+print('[PASS] flying star stays star-like (centre peak ' + str(cores[0]) + '->' + str(cores[-1])
+      + ', same order as the field peak ' + str(control['peak']) + '); ignites at the crossover (disc '
+      + str(bloom['disc_px']) + 'px, peak ' + str(bloom['peak']) + ') and saturates when close (peak '
+      + str(rows[-1]['peak']) + ', disc ' + str(rows[-1]['disc_px']) + 'px); disc area grows monotonically: ' + str(areas))

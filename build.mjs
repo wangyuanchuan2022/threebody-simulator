@@ -105,7 +105,13 @@ const gltfCode = stripExportBlock(loaderHalf.code, 'GLTFLoader export');
 const stlCode = stripExportBlock(stlHalf.code, 'STLLoader export');
 const loaderBundle = `(function(){\n'use strict';\nconst { ${loaderNames.join(', ')} } = window.THREE;\n${utilsCode.trim()}\n${gltfCode.trim()}\n${stlCode.trim()}\nwindow.THREE_LOADERS = { GLTFLoader, STLLoader };\n})();`;
 
-// --- optional embedded terrain model (base64 GLB or STL) ---
+// --- optional embedded star catalogue (real positions, built by tools/) ---
+let starScript = '<!-- no star catalogue embedded -->';
+if (fs.existsSync('assets/stars.json')) {
+  const data = fs.readFileSync('assets/stars.json', 'utf8');
+  starScript = `<script>window.STARFIELD_CATALOG = ${data.trim()};</script>`;
+  console.log('[BUILD] star catalogue: assets/stars.json (' + (data.length / 1024).toFixed(0) + ' KB)');
+}
 let terrainScript = '<!-- no terrain model embedded -->';
 if (terrainPath) {
   const data = fs.readFileSync(terrainPath);
@@ -122,7 +128,7 @@ for (const [label, code] of [['threeBundle', threeBundle], ['loaderBundle', load
 // Loader bundle may reference names as bare identifiers; all must exist on THREE.
 const missingLoader = loaderNames.filter(n => !names.includes(n));
 if (missingLoader.length) fail('loader names missing from THREE: ' + missingLoader.join(', '));
-for (const marker of ['THREE_BUNDLE', 'LOADER_BUNDLE', 'TERRAIN_MODEL', 'PHYSICS_BUNDLE', 'SHADERS_BUNDLE', 'APP_BUNDLE']) {
+for (const marker of ['THREE_BUNDLE', 'LOADER_BUNDLE', 'TERRAIN_MODEL', 'STARFIELD', 'PHYSICS_BUNDLE', 'SHADERS_BUNDLE', 'APP_BUNDLE']) {
   if (!template.includes('<!--' + marker + '-->')) fail('template missing marker ' + marker);
 }
 // Every THREE.* symbol the app uses must be exposed by the bundle.
@@ -136,11 +142,12 @@ const out = template
   .replace('<!--THREE_BUNDLE-->', () => `<script>\n${threeBundle}\n</script>`)
   .replace('<!--LOADER_BUNDLE-->', () => `<script>\n${loaderBundle}\n</script>`)
   .replace('<!--TERRAIN_MODEL-->', () => terrainScript)
+  .replace('<!--STARFIELD-->', () => starScript)
   .replace('<!--PHYSICS_BUNDLE-->', () => `<script>\n${physicsBundle}\n</script>`)
   .replace('<!--SHADERS_BUNDLE-->', () => `<script>\n${shadersBundle}\n</script>`)
   .replace('<!--APP_BUNDLE-->', () => `<script>\n${appBundle}\n</script>`);
 
-if (/<!--(THREE|LOADER|TERRAIN|PHYSICS|SHADERS|APP)_(BUNDLE|MODEL)-->/.test(out)) fail('unreplaced marker in output');
+if (/<!--(THREE|LOADER|TERRAIN|STARFIELD|PHYSICS|SHADERS|APP)_(BUNDLE|MODEL)-->/.test(out)) fail('unreplaced marker in output');
 if (!out.includes('window.THREE = {')) fail('THREE global assignment missing');
 if (terrainPath && !out.includes('window.TERRAIN_MODEL_B64')) fail('terrain model script missing from output');
 if (out.length < 1_000_000) fail('output suspiciously small: ' + out.length + ' bytes');
