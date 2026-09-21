@@ -84051,14 +84051,25 @@ vec3 atmosphere(vec3 rd, bool disk) {
   }
   float daylight=0.0;
   for(int i=0;i<3;i++)daylight+=max(0.0,suns[i].y+.09)*powers[i];
-  float night=exp(-daylight*24.0);
+  float night=exp(-daylight*9.0);
   sum+=vec3(.0008,.0015,.0026)*night;
   if(disk && rd.y>0.0) {
-    vec2 st=vec2(atan(rd.z,rd.x)*220.0,asin(rd.y)*220.0);
-    vec2 cell=floor(st);float h=hash(cell);
-    float star=pow(max(0.0,1.0-length(fract(st)-.5)*2.0),18.0)*step(.996,h);
+    // Background stars are POINT IMAGES with a ~1 px spread, exactly like a
+    // flying star. A sub-pixel core (the old pow(...,18) cell) survived only by
+    // sampling luck and vanished whenever the render resolution dropped.
+    vec2 st=vec2(atan(rd.z,rd.x),asin(rd.y));
+    float pixelsPerRad=resolution.y/fov;
+    vec2 grid=st*220.0;
+    vec2 cell=floor(grid);
+    float h=hash(cell);
+    vec2 jitter=vec2(hash(cell+1.7),hash(cell+3.3))-.5;
+    vec2 offset=(fract(grid)-.5-jitter*.7)/220.0;
+    float angular=length(offset*vec2(cos(st.y),1.0));
+    float core=exp(-.5*angular*angular*pixelsPerRad*pixelsPerRad/.9);
+    float magnitude=.3+.7*hash(cell+7.1);
     float band=pow(max(0.0,1.0-abs(rd.x*.5+rd.y*.7+rd.z*.2)),12.0);
-    sum+=night*(vec3(.35,.43,.55)*star+vec3(.001,.0012,.0017)*fbm(rd.xz*100.0)*band);
+    sum+=night*(vec3(.42,.5,.62)*step(.996,h)*magnitude*2.4*core
+                +vec3(.001,.0012,.0017)*fbm(rd.xz*100.0)*band);
   }
   return sum;
 }
