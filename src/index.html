@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101820">
+  <title>三体 · 三体世界地表观测站</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <canvas id="world" aria-label="地球地表天空，拖动以环顾四周" tabindex="0"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+  <header>
+    <div class="brand"><span class="orbit-icon" aria-hidden="true">◉</span><div><h1>三体</h1><span class="eyebrow">THE THREE-BODY OBSERVATORY</span></div></div>
+    <div class="live"><span></span>三体世界地表观测站 <b>01</b></div>
+  </header>
+  <main class="hud">
+    <section class="overview" aria-label="当前纪元状态">
+      <div class="eyebrow">THREE-BODY WORLD / SURFACE FEED</div>
+      <h2 id="era">乱纪元</h2>
+      <p id="subtitle">三颗太阳在混沌中运行，恒纪元与乱纪元交替。</p>
+      <div class="epoch"><span>第 <b id="generation">001</b> 号文明</span><i></i><span>已存续 <b id="days">0.0</b> 天</span></div>
+    </section>
+    <aside class="orbital glass">
+      <div class="panel-title" title="点击折叠面板"><span>恒星系实时轨道</span><span class="eyebrow">3D / AU</span></div>
+      <canvas id="map" aria-label="三维轨道图，拖动旋转，滚轮缩放" tabindex="0"></canvas>
+      <div class="legend"><span class="alpha">● α</span><span class="beta">● β</span><span class="gamma">● γ</span><span class="earth">● 地球</span></div>
+      <div class="map-hint">拖动旋转 · 滚轮缩放 · 天体尺寸已放大（天空同口径）</div>
+    </aside>
+    <section class="readings glass" aria-label="地球实时数据">
+      <div class="panel-title" title="点击折叠面板"><span>行星遥测</span><span id="state-label">观测中</span></div>
+      <dl><div><dt>全球均温 · 估算</dt><dd><span id="temperature">15.0</span><small>°C</small></dd></div><div><dt>总辐照通量</dt><dd><span id="flux">1.00</span><small>S⊕</small></dd></div><div><dt>最近恒星距离</dt><dd><span id="distance">—</span><small>AU</small></dd></div></dl>
+      <div class="temperature-track"><span id="temp-marker"></span></div>
+      <div class="track-labels"><span>极寒</span><span>适居</span><span>炽热</span></div>
+      <div class="sun-readings" id="sun-readings"></div>
+    </section>
+    <div class="view-hint"><span>＋</span> 拖动环顾天空 <i> / </i> 滚轮调整视野</div>
+    <section class="controls glass" aria-label="模拟控制">
+      <button id="pause" title="暂停或继续（空格）" aria-label="暂停模拟">Ⅱ</button>
+      <div class="speed-control"><label for="speed">时间流速 <output id="speed-value">0.05 天/秒</output></label><input id="speed" type="range" min="0" max="4" step="1" value="1" aria-label="时间流速"></div>
+      <span class="divider"></span>
+      <button id="restart">↻ <span>新世界</span></button>
+      <button id="history-button" aria-expanded="false">◷ <span>纪元记录</span></button>
+      <button id="settings-button" aria-expanded="false">☷ <span>观测设置</span></button>
+    </section>
+    <section id="settings" class="settings glass" hidden>
+      <h3>观测设置</h3>
+      <label>渲染精度<select id="quality"><option value="low" selected>流畅</option><option value="mid">均衡</option><option value="high">高画质</option><option value="ultra">超清</option></select></label>
+      <label>曝光补偿<input id="exposure" type="range" min="0.4" max="2.4" step="0.1" value="1"></label>
+      <label>云量<input id="clouds" type="range" min="0" max="1" step="0.05" value="0.42"></label>
+      <label><span>自动调节分辨率（保帧率）</span><input id="autoRes" type="checkbox" checked></label>
+      <label><span>高倍速时平滑天空（限速防频闪）</span><input id="smooth" type="checkbox"></label>
+      <label><span>自动开始下一纪元</span><input id="auto" type="checkbox" checked></label>
+      <p>三颗太阳与一颗行星在牛顿引力下自由演化：远日只是飞星，近日即成烈日，三日凌空为乱纪元之极。温度与生态终结为简化判据，不作天文或气候预测。为便于观察，天空与轨道图中的天体尺寸均已放大。</p>
+      <p>种子 <code id="seed">—</code> <button id="replay">重放此世界</button></p>
+    </section>
+    <section id="history" class="history glass" hidden><h3>文明纪元记录</h3><ol id="records"><li class="empty">尚无终结的文明。</li></ol></section>
+    <footer><span>牛顿引力 · 四天体实时演算</span><span id="fps">— fps</span><span id="heading">N 000°</span><span>北纬 25° · 海岸观测点</span></footer>
+  </main>
+  <section id="death" class="death" hidden role="dialog" aria-modal="true" aria-labelledby="death-title">
+    <div class="death-content"><span class="eyebrow">END OF AN ERA</span><h2 id="death-title"></h2><p id="death-detail"></p><div id="death-stats"></div><p id="countdown"></p><button id="next-world">开启下一纪元 →</button></div>
+  </section>
+  <div id="loading" role="status"><div class="loading-orbit">◌</div><p>正在展开三体世界的天空</p><small>初始化大气渲染器…</small></div>
+  <!--THREE_BUNDLE-->
+  <!--LOADER_BUNDLE-->
+  <!--TERRAIN_MODEL-->
+  <!--PHYSICS_BUNDLE-->
+  <!--SHADERS_BUNDLE-->
+  <!--APP_BUNDLE-->
+  <script>
+    setTimeout(() => {
+      const box = document.getElementById('loading');
+      if (box && !box.hidden) {
+        const note = box.querySelector('small');
+        if (note) note.textContent = '初始化仍在进行。若长时间停留在此页，请改用支持 WebGL2 的桌面浏览器（推荐 Chrome 或 Edge）。';
+      }
+    }, 12000);
+  </script>
+</body>
+</html>

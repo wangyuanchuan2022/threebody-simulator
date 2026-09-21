@@ -1,0 +1,23 @@
+# 本地专用：内嵌真实地形的构建变体（体积大，且地形模型为第三方素材，不入库）
+index-terrain.html
+terrain-test.html
+stl-test.html
+
+# 第三方地形素材：许可与体积原因不入库；README 说明了如何自行放置后重新构建
+assets/*.glb
+assets/*.stl
+
+# 测试过程产物（可由 tests/ 下脚本重新生成）
+tests/*.png
+tests/coverage/
+tests/browser-coverage.json
+tests/fixtures/
+tests/star-bloom.json
+
+# 评审与安全审查留档（内部材料，含本机路径）
+review/
+security-reports/
+
+# 杂项
+.tools/
+*.log
