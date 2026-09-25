@@ -13,7 +13,7 @@ export function randomGenerator(seed) {
 }
 export function distance(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
 export function center(bodies, field = 'p') {
-  const m = bodies.reduce((s, b) => s + b.mass, 0);
+  const m = bodies.reduce((s, b) => s + b.mass, 0) || 1;
   return [0, 1, 2].map(k => bodies.reduce((s, b) => s + b[field][k] * b.mass, 0) / m);
 }
 // Hot path: allocation-free scratch buffers keep adaptive substeps cheap.
@@ -24,6 +24,7 @@ export function accelerations(bodies, out = _a1) {
   for (let i = 0; i < n; i++) { a[i][0] = 0; a[i][1] = 0; a[i][2] = 0; }
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
+      if (bodies[i].deleted || bodies[j].deleted) continue;
       const pi = bodies[i].p, pj = bodies[j].p;
       const dx = pj[0] - pi[0], dy = pj[1] - pi[1], dz = pj[2] - pi[2];
       const r2 = dx * dx + dy * dy + dz * dz + 1e-10;
@@ -123,6 +124,7 @@ export function destruction(state) {
   // Titles and wording follow the novel's vocabulary (三日凌空 / 大撕裂 / 乱纪元 /
   // 脱水), because this is a dramatised reading of the three-body problem.
   for (let i = 0; i < 3; i++) {
+    if (bodies[i].deleted) continue;
     if (env.distances[i] <= bodies[i].radius + bodies[3].radius) {
       return { type: 'collision', title: '坠入太阳', detail: '行星坠入 ' + bodies[i].name + ' 的表面，大地在数分钟内化作等离子体。' };
     }
@@ -133,7 +135,7 @@ export function destruction(state) {
   }
   if (state.hotDays >= 8) return { type: 'heat', title: '乱纪元 · 三日凌空', detail: '三日凌空，海洋蒸发、大地焦裂；连续 8 个模拟日均温超过 120°C，末代文明的脱水者没能等到浸泡。' };
   if (state.coldDays >= 30) return { type: 'cold', title: '乱纪元 · 长夜', detail: '太阳远去，行星陷入连续 30 个模拟日的永夜与严寒（低于 −100°C）：海洋封冻，文明终止于冰层之下；行星本身仍然存在。' };
-  const stars = bodies.slice(0, 3), c = center(stars), cv = center(stars, 'v');
+  const stars = bodies.slice(0, 3).filter(b => !b.deleted), c = center(stars), cv = center(stars, 'v');
   const r = distance(bodies[3].p, c), mass = stars.reduce((s, b) => s + b.mass, 0);
   const rv = bodies[3].v.map((v, k) => v - cv[k]);
   const radial = rv.reduce((s, v, k) => s + v * (bodies[3].p[k] - c[k]), 0);
@@ -142,6 +144,7 @@ export function destruction(state) {
   }
   // Stellar collision invalidates the point-mass model; do not invent Earth's destruction.
   for (let i = 0; i < 3; i++) for (let j = i + 1; j < 3; j++) {
+    if (bodies[i].deleted || bodies[j].deleted) continue;
     if (distance(bodies[i].p, bodies[j].p) < bodies[i].radius + bodies[j].radius) {
       return { type: 'model', title: '恒星相撞 · 观测终止', detail: '两颗恒星表面相交，已超出点质量引力模型范围。本轮重启，但不计作行星毁灭。' };
     }
@@ -157,6 +160,7 @@ export function advance(state, dt = STEP) {
   while (remaining > 1e-10 && !state.death) {
     let h = Math.min(remaining, STEP);
     for (let i = 0; i < state.bodies.length; i++) for (let j = i + 1; j < state.bodies.length; j++) {
+      if (state.bodies[i].deleted || state.bodies[j].deleted) continue;
       const pi = state.bodies[i].p, pj = state.bodies[j].p;
       const d = Math.hypot(pi[0] - pj[0], pi[1] - pj[1], pi[2] - pj[2]);
       h = Math.min(h, Math.max(1e-5, 0.025 * Math.sqrt(d * d * d / (G * (state.bodies[i].mass + state.bodies[j].mass)))));
@@ -169,6 +173,7 @@ export function advance(state, dt = STEP) {
     state.hotDays = state.temperature > 393.15 ? state.hotDays + h : 0;
     state.coldDays = state.temperature < 173.15 ? state.coldDays + h : 0;
     state.death = destruction(state);
+    if (!state.death && state.days > 3650) state.death = { type: 'victory', title: '恒纪元的梦', detail: '文明已存续超过 3650 天。' };
     remaining -= h;
   }
 }
@@ -188,7 +193,7 @@ export function localSunDirections(state, phase = 0, days = state.days) {
   const dot = (a, b) => a.reduce((s, v, k) => s + v * b[k], 0);
   return state.bodies.slice(0, 3).map(b => {
     const d = b.p.map((v, k) => v - state.bodies[3].p[k]);
-    const r = Math.hypot(...d);
+    const r = Math.max(1e-10, Math.hypot(...d));
     return [dot(d, frame.east) / r, dot(d, frame.up) / r, -dot(d, frame.north) / r];
   });
 }

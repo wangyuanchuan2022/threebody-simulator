@@ -31,6 +31,8 @@ uniform float cloudCover;
 uniform float temperature;
 uniform float quality;
 uniform float terrainMesh;
+uniform sampler2D distantMountains;
+uniform float distantMountainsReady;
 uniform float proceduralStars;  // 1 only when no real catalogue is embedded
 const float PI=3.14159265359;
 float hash(vec2 p) { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
@@ -249,6 +251,22 @@ void main() {
     color=mix(waterSide,skySide,smoothstep(-.007,.007,rd.y));
   }
   float angle=atan(rd.z,rd.x);
+  float elevation=atan(rd.y,length(rd.xz));
+  if(distantMountainsReady>.5 && elevation>-.025 && elevation<.30) {
+    // Mirrored panorama closes the 360-degree loop without a hard seam.
+    float u=1.0-abs(2.0*fract(angle/PI+.5)-1.0);
+    float v=(elevation+.025)/.325;
+    vec4 mountains=texture2D(distantMountains,vec2(u,v));
+    vec3 albedo=pow(max(mountains.rgb,vec3(0.0)),vec3(2.2));
+    vec3 haze=atmosphere(normalize(vec3(rd.x,.035,rd.z)),false);
+    float sunHeight=max(suns[0].y,max(suns[1].y,suns[2].y));
+    float skyGlow=smoothstep(-.16,.08,sunHeight);
+    vec3 rock=albedo*(sunlight(vec3(0,1,0))*.65+vec3(.12,.15,.18)*skyGlow);
+    // Atmospheric light makes distant ridges softer and paler than foreground.
+    rock=mix(rock,haze,.18);
+    float alpha=mountains.a*smoothstep(-.025,.006,elevation);
+    color=mix(color,rock,alpha);
+  }
   if(terrainMesh<.5) {
     for(int j=0;j<3;j++) {
       float layer=float(j);
