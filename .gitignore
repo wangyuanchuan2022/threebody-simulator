@@ -12,6 +12,7 @@ assets/terrain.stl
 # 测试过程产物（可由 tests/ 下脚本重新生成）
 tests/*.png
 tests/coverage/
+tests/coverage-summary.json
 tests/browser-coverage.json
 tests/fixtures/
 tests/star-bloom.json
@@ -23,3 +24,7 @@ security-reports/
 # 杂项
 .tools/
 *.log
+
+# Personal seed archives
+seeds.txt
+wallpaper/seeds.txt
