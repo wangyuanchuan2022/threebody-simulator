@@ -1,8 +1,13 @@
 import * as THREE from 'three';
-import { createSystem, advance, STEP, clamp, center, localSunDirections, observerFrame, energy, classifyEra } from './physics.mjs';
+import { createSystem, advance, STEP, clamp, center, localSunDirections, observerFrame, energy, classifyEra, environment } from './physics.mjs';
 import { vertexShader, fragmentShader } from './shaders.mjs';
 
 const $ = id => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const wallpaperHost = params.has('wallpaper') || window.__THREEBODY_WALLPAPER__ === true;
+$('auto-pan').checked = wallpaperHost;
+let manualViewUntil = 0, panTime = 0;
+function holdAutoPan() { manualViewUntil = performance.now() + 15000; }
 const world = $('world');
 const renderer = new THREE.WebGLRenderer({ canvas: world, antialias: false, powerPreference: 'high-performance' });
 // Sky writes display-ready sRGB itself; standard materials get the sRGB encode.
@@ -33,8 +38,21 @@ const uniforms = {
   clock: { value: 0 }, weatherClock: { value: 0 }, yaw: { value: 0 }, pitch: { value: .08 }, fov: { value: 65 * Math.PI / 180 },
   proceduralStars: { value: 1 },
   exposure: { value: 1 }, cloudCover: { value: .42 }, temperature: { value: 288.15 }, quality: { value: 1 },
-  terrainMesh: { value: 0 }
+  terrainMesh: { value: 0 },
+  distantMountains: { value: null }, distantMountainsReady: { value: 0 }
 };
+// Embedded alpha panorama: rotates with the world, below the real terrain pass.
+// Keep the fallback sky while the image decodes (also works from file://).
+if (window.DISTANT_MOUNTAINS_URL) {
+  new THREE.TextureLoader().load(window.DISTANT_MOUNTAINS_URL, texture => {
+    texture.colorSpace = THREE.NoColorSpace; // shader converts source sRGB explicitly
+    texture.minFilter = THREE.LinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.generateMipmaps = false;
+    uniforms.distantMountains.value = texture;
+    uniforms.distantMountainsReady.value = 1;
+  }, undefined, () => console.warn('Distant mountain texture unavailable; using terrain only.'));
+}
 const skyMaterial = new THREE.ShaderMaterial({ uniforms, vertexShader, fragmentShader, defines: { ...LOD.low.defines }, depthTest: false, depthWrite: false });
 scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), skyMaterial));
 
@@ -75,13 +93,17 @@ if (window.STARFIELD_CATALOG && window.STARFIELD_CATALOG.stars) {
   geometry.setAttribute('starColor', new THREE.BufferAttribute(color, 3));
   geometry.setAttribute('size', new THREE.BufferAttribute(size, 1));
   const starMaterial = new THREE.ShaderMaterial({
-    uniforms: { nightSky: { value: 1 }, pixelRatio: { value: 1 } },
-    vertexShader: 'attribute float size;attribute vec3 starColor;varying vec3 vColor;uniform float pixelRatio;'
+    uniforms: { nightSky: { value: 1 }, pixelRatio: { value: 1 }, distantMountains: uniforms.distantMountains, distantMountainsReady: uniforms.distantMountainsReady },
+    vertexShader: 'attribute float size;attribute vec3 starColor;varying vec3 vColor;varying vec3 localDirection;uniform float pixelRatio;'
       + 'void main(){vColor=starColor;vec4 mv=modelViewMatrix*vec4(position,1.0);'
+      + 'localDirection=(modelMatrix*vec4(position,0.0)).xyz;'
       + 'gl_PointSize=max(1.0,size*pixelRatio);gl_Position=projectionMatrix*mv;}',
-    fragmentShader: 'varying vec3 vColor;uniform float nightSky;'
+    fragmentShader: 'varying vec3 vColor;varying vec3 localDirection;uniform float nightSky;uniform sampler2D distantMountains;uniform float distantMountainsReady;'
       + 'void main(){vec2 d=gl_PointCoord-vec2(0.5);float r2=dot(d,d);if(r2>0.25)discard;'
-      + 'float a=exp(-r2*14.0);gl_FragColor=vec4(vColor*a*nightSky,1.0);}',
+      + 'float elevation=atan(localDirection.y,length(localDirection.xz));float cover=0.0;'
+      + 'if(distantMountainsReady>.5 && elevation>-.025 && elevation<.30){float angle=atan(localDirection.z,localDirection.x);'
+      + 'float u=1.0-abs(2.0*fract(angle/3.14159265359+.5)-1.0);cover=texture2D(distantMountains,vec2(u,(elevation+.025)/.325)).a*smoothstep(-.025,.006,elevation);}'
+      + 'float a=exp(-r2*14.0);gl_FragColor=vec4(vColor*a*nightSky*(1.0-cover),1.0);}',
     transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
   });
   starPoints = new THREE.Points(geometry, starMaterial);
@@ -200,7 +222,7 @@ const ERA = { window: 30, samples: [], label: '观测中', candidate: null, cand
 function sampleEra() {
   const d = state.days;
   if (ERA.samples.length && d - ERA.samples[ERA.samples.length - 1].days < .25) return;
-  const fluxes = state.bodies.slice(0, 3).map((b, i) => b.luminosity / state.env.distances[i] ** 2);
+  const fluxes = state.bodies.slice(0, 3).map((b, i) => b.luminosity / Math.max(state.env.distances[i] ** 2, 1e-10));
   const total = fluxes.reduce((a, b) => a + b, 0);
   ERA.samples.push({ days: d, temperature: state.temperature, flux: total, dominance: total > 0 ? Math.max(...fluxes) / total : 0 });
   while (ERA.samples.length && ERA.samples[0].days < d - ERA.window) ERA.samples.shift();
@@ -233,8 +255,81 @@ function viewState() {
   });
   return { ...state, bodies };
 }
+// Deleted stars retain stable slots for the three-light renderer.
+let gmEnabled = false, gmSelected = 0, cheatKeys = [], seedRecorded = false;
+const cheat = ['ArrowUp','ArrowDown','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','KeyA','KeyB'];
+let savedSeeds = [];
+try { savedSeeds = JSON.parse(localStorage.getItem('threebody-seeds') || '[]').filter(r => Number.isInteger(r.seed) && r.days >= 365); } catch {}
+let syncingSeeds = false;
+async function syncSeeds() {
+  if (!$('seed-service').checked || syncingSeeds || !savedSeeds.length) return;
+  syncingSeeds = true;
+  try {
+    const response = await fetch('http://127.0.0.1:18765/seeds', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(savedSeeds), signal: AbortSignal.timeout(3000) });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    $('seed-status').textContent = '已同步到 seeds.txt（' + savedSeeds.length + ' 条）';
+  } catch { $('seed-status').textContent = '本地服务未连接；种子已缓存，可导出。'; }
+  finally { syncingSeeds = false; }
+}
+function recordSeed() {
+  if (seedRecorded || state.days < 365) return;
+  seedRecorded = true;
+  // Edited scenarios cannot be reproduced from the random seed alone.
+  if (state.edited) return;
+  if (!savedSeeds.some(r => r.seed === state.seed)) savedSeeds.push({seed:state.seed, days:state.days});
+  try { localStorage.setItem('threebody-seeds', JSON.stringify(savedSeeds)); $('seed-status').textContent = '已收藏 ' + savedSeeds.length + ' 个种子'; }
+  catch { $('seed-status').textContent = '存储不可用，请在关闭前导出种子。'; }
+  syncSeeds();
+}
+$('seed-export').onclick = () => {
+  const url = URL.createObjectURL(new Blob([savedSeeds.map(r => 'seed: ' + r.seed + ' days: ' + r.days.toFixed(3)).join('\n') + '\n'], {type:'text/plain;charset=utf-8'}));
+  const a = document.createElement('a'); a.href = url; a.download = 'seeds.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+$('seed-service').onchange = syncSeeds;
+setInterval(syncSeeds, 15000);
+function renderGM() {
+  $('gm').hidden = !gmEnabled;
+  $('gm-body').replaceChildren(...state.bodies.map((b, i) => { const o = document.createElement('option'); o.value = i; o.textContent = b.name + (b.deleted ? '（已删除）' : ''); o.disabled = !!b.deleted; return o; }));
+  $('gm-body').value = gmSelected;
+  const b = state.bodies[gmSelected];
+  $('gm-values').textContent = '位置 AU: ' + b.p.map(n => n.toFixed(3)).join(', ') + ' ｜速度 AU/天: ' + b.v.map(n => n.toFixed(4)).join(', ');
+}
+function editBody(action) {
+  if (state.death) return;
+  const b = state.bodies[gmSelected];
+  if (b.deleted) return;
+  if (!paused) togglePause();
+  state.edited = true;
+  if (action === 'Delete') {
+    if (gmSelected === 3) state.death = {type:'gm', title:'GM · 地球已删除', detail:'观测点随地球消失，本轮场景结束。'};
+    else { b.deleted = true; b.mass = 0; b.radius = 0; b.luminosity = 0; gmSelected = 3; }
+  } else {
+    const axis = $('gm-plane').value === 'xy' ? 1 : 2;
+    const moves = {ArrowLeft:['p',0,-.05],ArrowRight:['p',0,.05],ArrowUp:['p',axis,.05],ArrowDown:['p',axis,-.05],KeyA:['v',0,-.001],KeyD:['v',0,.001],KeyW:['v',axis,.001],KeyS:['v',axis,-.001]};
+    const [field,k,delta] = moves[action]; b[field][k] += delta;
+  }
+  state.env = environment(state.bodies); state.initialEnergy = energy(state.bodies);
+  histories.forEach(h => h.length = 0); trails.forEach(t => t.geometry.setDrawRange(0,0)); lastTrail = -1;
+  ERA.samples.length = 0; ERA.label = '观测中'; ERA.candidate = null;
+  snapshotPrev(); accumulator = 0; renderGM(); updateUI();
+}
+function handleGMKey(e) {
+  if (e.target.matches('input,select,textarea,[contenteditable=true]') || ! $('death').hidden) return false;
+  if (!e.repeat) {
+    cheatKeys.push(e.code); cheatKeys = cheatKeys.slice(-cheat.length);
+    if (cheat.every((key,i) => cheatKeys[i] === key)) { gmEnabled = !gmEnabled; if (gmEnabled && !paused) togglePause(); renderGM(); cheatKeys = []; e.preventDefault(); return true; }
+  }
+  if (!gmEnabled) return false;
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyW','KeyA','KeyS','KeyD','Delete'].includes(e.code)) { e.preventDefault(); editBody(e.code); return true; }
+  return false;
+}
+$('gm-body').onchange = () => { gmSelected = Number($('gm-body').value); renderGM(); $('world').focus(); };
+$('gm-close').onclick = () => { gmEnabled = false; renderGM(); };
+document.querySelectorAll('[data-gm]').forEach(b => b.onclick = () => editBody(b.dataset.gm));
 function reset(seed) {
   state = createSystem(seed);
+  seedRecorded = false;
+  if (gmEnabled) renderGM();
   generation++;
   accumulator = 0; deathRemaining = null; lastTrail = -1; viewDays = state.days; prevDays = state.days;
   ERA.samples.length = 0; ERA.label = '观测中'; ERA.candidate = null; ERA.candidateSince = 0;
@@ -262,14 +357,14 @@ function reset(seed) {
 function updateUI() {
   const temp = state.temperature - 273.15;
   const dirs = localSunDirections(state, phase, viewDays);
-  const powers = state.bodies.slice(0, 3).map((b, i) => b.luminosity / state.env.distances[i] ** 2);
-  const up = i => dirs[i][1] > 0;
+  const powers = state.bodies.slice(0, 3).map((b, i) => b.luminosity / Math.max(state.env.distances[i] ** 2, 1e-10));
+  const up = i => !state.bodies[i].deleted && dirs[i][1] > 0;
   const strong = [0, 1, 2].filter(i => up(i) && powers[i] > .12).length;
   const flying = [0, 1, 2].filter(i => up(i) && powers[i] <= .12).length;
   $('days').textContent = state.days.toFixed(1);
   $('temperature').textContent = temp.toFixed(1);
   $('flux').textContent = state.env.flux.toFixed(2);
-  $('distance').textContent = Math.min(...state.env.distances).toFixed(3);
+  $('distance').textContent = (state.bodies.slice(0,3).some(b => !b.deleted) ? Math.min(...state.env.distances.filter((_,i) => !state.bodies[i].deleted)).toFixed(3) : '—');
   $('temp-marker').style.left = clamp((temp + 150) / 300 * 100, 0, 100) + '%';
   // 恒纪元 / 乱纪元 describe the recent PERIOD (see updateEra), while the hero
   // line describes the sky right now -- the two are deliberately different axes.
@@ -290,7 +385,7 @@ function updateUI() {
     const div = document.createElement('div');
     div.textContent = b.name;
     const value = document.createElement('b');
-    const status = dirs[i][1] <= 0 ? '地平线下' : powers[i] > .12 ? '太阳' : '飞星';
+    const status = b.deleted ? '已删除' : dirs[i][1] <= 0 ? '地平线下' : powers[i] > .12 ? '太阳' : '飞星';
     value.textContent = (Math.asin(clamp(dirs[i][1], -1, 1)) * 180 / Math.PI).toFixed(1) + '° ' + status;
     div.append(value); return div;
   }));
@@ -299,9 +394,10 @@ function updateUI() {
 }
 function endWorld() {
   if (deathRemaining !== null) return;
-  deathRemaining = 8;
+  const victory = state.death.type === 'victory';
+  deathRemaining = victory ? 3 : 8;
   $('death').hidden = false;
-  $('death-title').textContent = state.death.title;
+  $('death-title').textContent = victory ? '恒纪元的梦，在第 ' + generation + ' 号文明终于成为了现实！' : state.death.title;
   $('death-detail').textContent = state.death.detail;
   $('death-stats').textContent = '第 ' + generation + ' 号文明 · 存续 ' + state.days.toFixed(1) + ' 天 · 种子 ' + state.seed;
   records.unshift({ title: state.death.title, days: state.days, generation, seed: state.seed });
@@ -337,8 +433,8 @@ function updateMap() {
   if (mapPhase && state.days - lastMapDays < .02) return;
   lastMapDays = state.days;
   const c = new THREE.Vector3(...center(state.bodies));
-  const radius = Math.max(2, ...state.bodies.map(b => new THREE.Vector3(...b.p).distanceTo(c)));
-  meshes.forEach((m, i) => { m.position.fromArray(state.bodies[i].p); m.scale.setScalar(radius * (i === 3 ? .018 : .025)); });
+  const radius = Math.max(2, ...state.bodies.filter(b => !b.deleted).map(b => new THREE.Vector3(...b.p).distanceTo(c)));
+  meshes.forEach((m, i) => { m.visible = !state.bodies[i].deleted; trails[i].visible = m.visible; m.position.fromArray(state.bodies[i].p); m.scale.setScalar(radius * (i === 3 ? .018 : .025)); });
   if (state.days - lastTrail >= .2 || lastTrail < 0) {
     state.bodies.forEach((b, i) => {
       histories[i].push([...b.p]); if (histories[i].length > 600) histories[i].shift();
@@ -371,7 +467,7 @@ function tick(now) {
       const step = clamp(rateNow * elapsed / 4, .00002, STEP);
       currentStep = step;
       let n = 0;
-      while (accumulator >= step && n < 200 && !state.death) { snapshotPrev(); advance(state, step); accumulator -= step; n++; }
+      while (accumulator >= step && n < 200 && !state.death) { snapshotPrev(); advance(state, step); recordSeed(); accumulator -= step; n++; }
       accumulator = Math.min(accumulator, 3);
       const simDelta = state.days - prevDays;
       prevDays = state.days;
@@ -385,9 +481,17 @@ function tick(now) {
     }
     if (state.death) {
       endWorld();
-      if ($('auto').checked && !paused) deathRemaining -= Math.min(rawElapsed, .5);
-      $('countdown').textContent = $('auto').checked ? (paused ? '已暂停倒计时' : Math.max(0, Math.ceil(deathRemaining)) + ' 秒后，第 ' + (generation + 1) + ' 号文明开始') : '自动重启已关闭';
-      if (deathRemaining <= 0 && $('auto').checked && !paused) reset();
+      if ((state.death.type === 'victory' || $('auto').checked) && (!paused || state.death.type === 'victory')) deathRemaining -= Math.min(rawElapsed, .5);
+      $('countdown').textContent = (state.death.type === 'victory' || $('auto').checked) ? (paused && state.death.type !== 'victory' ? '已暂停倒计时' : Math.max(0, Math.ceil(deathRemaining)) + ' 秒后，第 ' + (generation + 1) + ' 号文明开始') : '自动重启已关闭';
+      if (deathRemaining <= 0 && (state.death.type === 'victory' || ($('auto').checked && !paused))) { if (paused) togglePause(); reset(); }
+    }
+    // Real-time panoramic sweep, independent of simulation speed. Keep manual
+    // framing for 15 seconds; pausing and GM editing also stop the camera.
+    if ($('auto-pan').checked && !paused && !gmEnabled && !state.death && now >= manualViewUntil) {
+      panTime += elapsed;
+      uniforms.yaw.value += elapsed * .006;
+      const targetPitch = .24 + .06 * Math.sin(panTime * .021);
+      uniforms.pitch.value += (targetPitch - uniforms.pitch.value) * (1 - Math.exp(-elapsed * .5));
     }
     const view = viewState();
     // Orient the star sphere: celestial -> local view frame (rows east, up, -north),
@@ -403,16 +507,16 @@ function tick(now) {
     }
     const dirs = localSunDirections(view, phase, viewDays);
     const viewEnv = environment(view.bodies);
-    const powers = view.bodies.slice(0, 3).map((b, i) => b.luminosity / viewEnv.distances[i] ** 2);
+    const powers = view.bodies.slice(0, 3).map((b, i) => b.luminosity / Math.max(viewEnv.distances[i] ** 2, 1e-10));
     dirs.forEach((d, i) => {
       uniforms.suns.value[i].fromArray(d);
       uniforms.powers.value[i] = powers[i];
-      uniforms.radii.value[i] = Math.asin(clamp(view.bodies[i].radius / viewEnv.distances[i], 0, .99));
+      uniforms.radii.value[i] = Math.asin(clamp(view.bodies[i].radius / Math.max(viewEnv.distances[i], 1e-10), 0, .99));
       const light = sunLights[i];
       light.position.set(d[0], d[1], d[2]).multiplyScalar(30000);
       light.color.set(state.bodies[i].color);
       light.intensity = clamp(powers[i] * 2.2, .02, 2.6);
-      light.visible = d[1] > -.05;
+      light.visible = !state.bodies[i].deleted && d[1] > -.05;
     });
     const daylight = dirs.reduce((s, d, i) => s + Math.max(0, d[1] + .09) * powers[i], 0);
     const night = Math.exp(-daylight * 9.0);
@@ -433,6 +537,8 @@ function tick(now) {
     renderer.render(scene, camera);
     renderer.clearDepth();
     renderer.render(worldScene, viewCamera);
+    // The orbital inset and the telemetry both cost a second WebGL pass plus DOM
+    // writes; skip them only when the wallpaper is running without readouts.
     updateMap(view);
     fpsAccum += rawElapsed; fpsFrames++;
     if (fpsAccum >= .5) {
@@ -478,23 +584,30 @@ function drag(canvas, move) {
   canvas.addEventListener('pointermove', e => { if (!last) return; move(e.clientX - last[0], e.clientY - last[1]); last = [e.clientX, e.clientY]; });
   for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(type, () => { last = null; });
 }
-drag(world, (dx, dy) => { uniforms.yaw.value -= dx * .003; uniforms.pitch.value = clamp(uniforms.pitch.value + dy * .003, -.9, 1.4); });
-drag($('map'), (dx, dy) => { mapYaw -= dx * .008; mapPitch = clamp(mapPitch + dy * .008, -.1, 1.5); });
-world.addEventListener('wheel', e => {
-  e.preventDefault();
-  uniforms.fov.value = clamp(uniforms.fov.value + e.deltaY * .0005, .35, 1.65);
-  viewCamera.fov = uniforms.fov.value * 180 / Math.PI;
-  viewCamera.updateProjectionMatrix();
-}, { passive: false });
-$('map').addEventListener('wheel', e => { e.preventDefault(); mapZoom = clamp(mapZoom * Math.exp(e.deltaY * .001), .5, 3); }, { passive: false });
-window.addEventListener('keydown', e => {
-  if (e.target.matches('input,select,button') || ! $('death').hidden) return;
-  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
-  if (e.code === 'ArrowLeft') uniforms.yaw.value -= .08;
-  if (e.code === 'ArrowRight') uniforms.yaw.value += .08;
-  if (e.code === 'ArrowUp') uniforms.pitch.value = clamp(uniforms.pitch.value + .06, -.9, 1.4);
-  if (e.code === 'ArrowDown') uniforms.pitch.value = clamp(uniforms.pitch.value - .06, -.9, 1.4);
-});
+// Browser and Wallpaper Engine use the same input handlers.
+{
+  world.addEventListener('pointerdown', holdAutoPan);
+  drag(world, (dx, dy) => { holdAutoPan(); uniforms.yaw.value -= dx * .003; uniforms.pitch.value = clamp(uniforms.pitch.value + dy * .003, -.9, 1.4); });
+  drag($('map'), (dx, dy) => { mapYaw -= dx * .008; mapPitch = clamp(mapPitch + dy * .008, -.1, 1.5); });
+  world.addEventListener('wheel', e => {
+    e.preventDefault();
+    holdAutoPan();
+    uniforms.fov.value = clamp(uniforms.fov.value + e.deltaY * .0005, .35, 1.65);
+    viewCamera.fov = uniforms.fov.value * 180 / Math.PI;
+    viewCamera.updateProjectionMatrix();
+  }, { passive: false });
+  $('map').addEventListener('wheel', e => { e.preventDefault(); mapZoom = clamp(mapZoom * Math.exp(e.deltaY * .001), .5, 3); }, { passive: false });
+  window.addEventListener('keydown', e => {
+    if (handleGMKey(e)) return;
+    if (e.target.matches('input,select,button') || ! $('death').hidden) return;
+    if (e.code.startsWith('Arrow')) holdAutoPan();
+    if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+    if (e.code === 'ArrowLeft') uniforms.yaw.value -= .08;
+    if (e.code === 'ArrowRight') uniforms.yaw.value += .08;
+    if (e.code === 'ArrowUp') uniforms.pitch.value = clamp(uniforms.pitch.value + .06, -.9, 1.4);
+    if (e.code === 'ArrowDown') uniforms.pitch.value = clamp(uniforms.pitch.value - .06, -.9, 1.4);
+  });
+}
 $('death').addEventListener('keydown', e => { if (e.key === 'Tab') { e.preventDefault(); $('next-world').focus(); } });
 let contextNotice = 0;
 world.addEventListener('webglcontextlost', e => {
@@ -511,7 +624,13 @@ world.addEventListener('webglcontextrestored', () => {
   $('loading').hidden = true;
 });
 window.addEventListener('resize', resize);
-reset(new URLSearchParams(location.search).has('seed') ? Number(new URLSearchParams(location.search).get('seed')) >>> 0 : undefined);
+// Wallpaper tuning without a rebuild: ?speed=0..4 picks the time rate (0 is the
+// calmest at 0.01 days/s, 4 the fastest at 30), ?seed=N pins the starting world.
+if (params.has('speed')) {
+  $('speed').value = String(clamp(Number(params.get('speed')) | 0, 0, speeds.length - 1));
+  $('speed-value').textContent = speeds[Number($('speed').value)] + ' 天/秒';
+}
+reset(params.has('seed') ? Number(params.get('seed')) >>> 0 : undefined);
 applyQuality();
 renderer.compile(scene, camera);
 renderer.compile(worldScene, viewCamera);
@@ -520,5 +639,5 @@ requestAnimationFrame(tick);
 // Read-only instrumentation plus explicit test mode; never enabled on a normal page.
 window.observatory = { snapshot: () => ({ seed: state.seed, days: state.days, generation, paused, death: state.death, bodies: structuredClone(state.bodies), energyError: Math.abs((energy(state.bodies) - state.initialEnergy) / state.initialEnergy) }) };
 if (new URLSearchParams(location.search).has('test')) {
-  window.observatory.test = { state: () => state, reset, advance: days => { advance(state, days); updateUI(); }, setPause: value => { if (paused !== value) togglePause(); }, terrainReady: () => terrainReady, weather: () => uniforms.weatherClock.value, fps: () => lastFps, stepDays: () => currentStep, placeStar: (index, local, distance) => { const frame = observerFrame(state, phase, viewDays); const dir = [0, 1, 2].map(k => local[0] * frame.east[k] + local[1] * frame.up[k] - local[2] * frame.north[k]); state.bodies[index].p = state.bodies[3].p.map((value, k) => value + dir[k] * distance); prevP[index][0] = state.bodies[index].p[0]; prevP[index][1] = state.bodies[index].p[1]; prevP[index][2] = state.bodies[index].p[2]; accumulator = 0; updateUI(); }, era: () => ({ label: ERA.label, samples: ERA.samples.length, dominance: ERA.samples.length ? ERA.samples[ERA.samples.length - 1].dominance : 0 }), setView: (yawValue, pitchValue) => { uniforms.yaw.value = yawValue; uniforms.pitch.value = pitchValue; }, viewDirection: () => { const v = new THREE.Vector3(); viewCamera.getWorldDirection(v); return [v.x, v.y, v.z]; }, terrainInfo: () => { let mesh = null; worldScene.traverse(child => { if (!mesh && child.isMesh) mesh = child; }); if (!mesh) return null; const geometry = mesh.geometry; return { vertices: geometry.attributes.position.count, triangles: Math.round((geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3), colored: !!geometry.attributes.color }; }, syncView: () => { viewDays = state.days; prevDays = state.days; updateUI(); } };
+  window.observatory.test = { state: () => state, reset, advance: days => { advance(state, days); recordSeed(); updateUI(); }, setPause: value => { if (paused !== value) togglePause(); }, terrainReady: () => terrainReady, weather: () => uniforms.weatherClock.value, fps: () => lastFps, stepDays: () => currentStep, placeStar: (index, local, distance) => { const frame = observerFrame(state, phase, viewDays); const dir = [0, 1, 2].map(k => local[0] * frame.east[k] + local[1] * frame.up[k] - local[2] * frame.north[k]); state.bodies[index].p = state.bodies[3].p.map((value, k) => value + dir[k] * distance); prevP[index][0] = state.bodies[index].p[0]; prevP[index][1] = state.bodies[index].p[1]; prevP[index][2] = state.bodies[index].p[2]; accumulator = 0; updateUI(); }, era: () => ({ label: ERA.label, samples: ERA.samples.length, dominance: ERA.samples.length ? ERA.samples[ERA.samples.length - 1].dominance : 0 }), setView: (yawValue, pitchValue) => { uniforms.yaw.value = yawValue; uniforms.pitch.value = pitchValue; }, viewDirection: () => { const v = new THREE.Vector3(); viewCamera.getWorldDirection(v); return [v.x, v.y, v.z]; }, terrainInfo: () => { let mesh = null; worldScene.traverse(child => { if (!mesh && child.isMesh) mesh = child; }); if (!mesh) return null; const geometry = mesh.geometry; return { vertices: geometry.attributes.position.count, triangles: Math.round((geometry.index ? geometry.index.count : geometry.attributes.position.count) / 3), colored: !!geometry.attributes.color }; }, syncView: () => { viewDays = state.days; prevDays = state.days; updateUI(); } };
 }

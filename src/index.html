@@ -46,6 +46,7 @@
     </section>
     <section id="settings" class="settings glass" hidden>
       <h3>观测设置</h3>
+      <label><span>自动缓慢环顾（壁纸默认开启）</span><input id="auto-pan" type="checkbox"></label>
       <label>渲染精度<select id="quality"><option value="low" selected>流畅</option><option value="mid">均衡</option><option value="high">高画质</option><option value="ultra">超清</option></select></label>
       <label>曝光补偿<input id="exposure" type="range" min="0.4" max="2.4" step="0.1" value="1"></label>
       <label>云量<input id="clouds" type="range" min="0" max="1" step="0.05" value="0.42"></label>
@@ -55,7 +56,16 @@
       <p>三颗太阳与一颗行星在牛顿引力下自由演化：远日只是飞星，近日即成烈日，三日凌空为乱纪元之极。温度与生态终结为简化判据，不作天文或气候预测。为便于观察，天空与轨道图中的天体尺寸均已放大。</p>
       <p>种子 <code id="seed">—</code> <button id="replay">重放此世界</button></p>
     </section>
-    <section id="history" class="history glass" hidden><h3>文明纪元记录</h3><ol id="records"><li class="empty">尚无终结的文明。</li></ol></section>
+    <section id="history" class="history glass" hidden><h3>文明纪元记录</h3><button id="seed-export">导出 seeds.txt</button><label><input id="seed-service" type="checkbox">连接本地种子保存服务</label><p id="seed-status" role="status">满 365 天自动收藏；GM 编辑世界不计入。</p><ol id="records"><li class="empty">尚无终结的文明。</li></ol></section>
+    <section id="gm" class="gm glass" hidden>
+      <h3>GM 场景编辑器 <button id="gm-close">关闭</button></h3>
+      <select id="gm-body" aria-label="选择天体"></select>
+      <select id="gm-plane" aria-label="编辑平面"><option value="xy">XY 平面</option><option value="xz">XZ 平面</option></select>
+      <p>方向键移动 0.05 AU；WASD 调速 0.001 AU/天；Delete 删除。编辑自动暂停，空格继续。</p>
+      <div><button data-gm="ArrowLeft">←</button><button data-gm="ArrowRight">→</button><button data-gm="ArrowUp">↑</button><button data-gm="ArrowDown">↓</button></div>
+      <div><button data-gm="KeyW">W</button><button data-gm="KeyA">A</button><button data-gm="KeyS">S</button><button data-gm="KeyD">D</button><button data-gm="Delete">删除</button></div>
+      <p id="gm-values"></p>
+    </section>
     <footer><span>牛顿引力 · 四天体实时演算</span><span id="fps">— fps</span><span id="heading">N 000°</span><span>北纬 25° · 海岸观测点</span></footer>
   </main>
   <section id="death" class="death" hidden role="dialog" aria-modal="true" aria-labelledby="death-title">

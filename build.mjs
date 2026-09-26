@@ -118,6 +118,12 @@ if (terrainPath) {
   terrainScript = `<script>window.TERRAIN_MODEL_KIND = ${JSON.stringify(terrainKind)};window.TERRAIN_MODEL_B64 = ${JSON.stringify(data.toString('base64'))};</script>`;
   console.log('[BUILD] terrain model (' + terrainKind + '): ' + terrainPath + ' (' + (data.length / 1024).toFixed(0) + ' KB)');
 }
+const mountainPath = 'assets/distant-mountains.png';
+if (fs.existsSync(mountainPath)) {
+  const data = fs.readFileSync(mountainPath);
+  terrainScript += `<script>window.DISTANT_MOUNTAINS_URL = "data:image/png;base64,${data.toString('base64')}";</script>`;
+  console.log('[BUILD] distant mountains: ' + (data.length / 1024).toFixed(0) + ' KB');
+}
 
 // --- gates ---
 for (const [label, code] of [['threeBundle', threeBundle], ['loaderBundle', loaderBundle], ['physicsBundle', physicsBundle], ['shadersBundle', shadersBundle], ['appBundle', appBundle]]) {
