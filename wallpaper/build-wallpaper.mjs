@@ -19,12 +19,12 @@ if (!html.includes('<body>')) throw new Error('Build output is missing <body>');
 // style.css is shared by index.html and docs/index.html, and all three files must keep
 // rendering the plain page identically.
 //   - the era readout sits at 5vw, right under the desktop icon column, so a wallpaper
-//     moves it out to a third of the width (above 800px, which leaves the upstream
-//     narrow-screen layout at left: 18px untouched);
+//     moves it clear of the icons (above 800px, which leaves the upstream narrow-screen
+//     layout at left: 18px untouched);
 //   - the "drag to look around" hint is meaningless on a wallpaper, so drop it.
 const hostStyle = '  <style>'
   + '.hud .view-hint{display:none}'
-  + '@media(min-width:801px){.hud .overview{left:33.333vw}}'
+  + '@media(min-width:801px){.hud .overview{left:22vw}}'
   + '</style>';
 fs.writeFileSync(target, html.replace('<body>',
   '<body>\n  <script>window.__THREEBODY_WALLPAPER__ = true;</script>\n' + hostStyle));
