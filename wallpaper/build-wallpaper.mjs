@@ -11,10 +11,18 @@ fs.mkdirSync(here, { recursive: true });
 const target = path.join(here, 'index.html');
 
 execFileSync(process.execPath, ['build.mjs', ...passthrough, '--out', target], { cwd: root, stdio: 'inherit' });
-// Only selects the default camera behaviour; all input handlers remain enabled.
+// Only selects the default camera behaviour and the wallpaper-only framing below;
+// all input handlers remain enabled.
 const html = fs.readFileSync(target, 'utf8');
 if (!html.includes('<body>')) throw new Error('Build output is missing <body>');
-fs.writeFileSync(target, html.replace('<body>', '<body>\n  <script>window.__THREEBODY_WALLPAPER__ = true;</script>'));
+// On the desktop the era readout sits at 5vw, right under the icon column. A wallpaper
+// moves it out to a third of the width. This is injected here rather than added to
+// style.css on purpose: style.css is shared by index.html and docs/index.html, and all
+// three files must keep rendering the plain page identically. The min-width guard
+// leaves the upstream narrow-screen layout (left: 18px) alone.
+const hostStyle = '  <style>@media(min-width:801px){.hud .overview{left:33.333vw}}</style>';
+fs.writeFileSync(target, html.replace('<body>',
+  '<body>\n  <script>window.__THREEBODY_WALLPAPER__ = true;</script>\n' + hostStyle));
 
 // style.css stays an external file in the upstream build, so the host needs its own
 // copy sitting next to index.html.
