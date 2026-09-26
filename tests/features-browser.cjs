@@ -64,8 +64,16 @@ const previewBefore = fs.readFileSync(path.resolve('wallpaper/preview.jpg'));
       assert.equal(await page.evaluate(() => observatory.snapshot().paused), false);
       assert.deepEqual(errors, []);
       if (file.startsWith('wallpaper/') && process.argv.includes('--update-preview')) {
-        await page.evaluate(() => { observatory.test.reset(12); observatory.test.setPause(true); });
-        await page.screenshot({ path: path.resolve('wallpaper/preview.jpg'), type: 'jpeg', quality: 85 });
+        // A dedicated 16:9 page, loaded fresh, so the Workshop thumbnail matches a
+        // standard display and the era line reads 文明 001.
+        const shot = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+        await shot.goto(pathToFileURL(path.resolve(file)).href + '?seed=12&test');
+        await shot.waitForFunction(() => !!window.observatory, null, { timeout: 120000 });
+        await shot.evaluate(() => observatory.test.setPause(true));
+        await shot.waitForFunction(() => observatory.test.terrainReady(), null, { timeout: 120000 });
+        await shot.waitForTimeout(3000);
+        await shot.screenshot({ path: path.resolve('wallpaper/preview.jpg'), type: 'jpeg', quality: 88 });
+        await shot.close();
       }
       await page.close();
       console.log('PASS browser:', file);
